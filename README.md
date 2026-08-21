@@ -9,6 +9,7 @@ WinIEX is a lightweight, terminal-native IDE prototype for Windows, written enti
 
 - Three-panel terminal UI: Explorer, editor, and command output
 - Keyboard-driven file navigation and text editing
+- Direct panel shortcuts and an in-app keyboard guide
 - Save and run the active file without leaving the interface
 - Built-in PowerShell command prompt with command history
 - Automatic runtime detection from `PATH`
@@ -86,18 +87,28 @@ pwsh -NoProfile -File .\src\WinIEX.ps1 -Workspace 'C:\Projects\Demo'
 
 | Context | Key | Action |
 | --- | --- | --- |
-| Global | `Tab` | Cycle Explorer → Editor → Terminal |
+| Global | `F1` | Open or close the keyboard guide |
+| Global | `F2` / `F3` / `F4` | Focus Explorer / Editor / Terminal directly |
+| Global | `Tab` / `Shift+Tab` | Move to the next / previous panel |
+| Global | `Esc` | Return to Explorer or close the keyboard guide |
 | Global | `Ctrl+S` | Save the active file |
 | Global | `F5` | Save and run the active file |
 | Global | `Ctrl+R` | Refresh files and runtime detection |
 | Global | `Ctrl+Q` | Quit WinIEX |
 | Explorer | `↑` / `↓` | Move through entries |
-| Explorer | `Enter` | Open a file or directory |
-| Explorer | `Backspace` | Go to the parent directory |
-| Editor | Arrow keys, `Home`, `End` | Move the cursor |
+| Explorer | `→` / `Enter` | Open the selected file or directory |
+| Explorer | `←` / `Backspace` | Go to the parent directory and keep the previous folder selected |
+| Explorer | `Home` / `End` | Jump to the first / last entry |
+| Explorer | `PageUp` / `PageDown` | Move by one visible page |
+| Editor | Arrow keys, `Home`, `End` | Move the cursor or jump to a line edge |
+| Editor | `Ctrl+Home` / `Ctrl+End` | Jump to the start / end of the file |
+| Editor | `PageUp` / `PageDown` | Move by one editor page |
 | Editor | `Enter`, `Backspace`, `Delete` | Edit text |
 | Terminal | `Enter` | Run the entered PowerShell command |
 | Terminal | `↑` / `↓` | Browse command history |
+| Terminal | `←` / `→`, `Home`, `End`, `Delete` | Edit the command line at the cursor |
+| Terminal | `PageUp` / `PageDown` | Scroll command output |
+| Terminal | `Ctrl+L` | Clear command output |
 
 ## Supported runners
 

@@ -8,6 +8,7 @@ $ErrorActionPreference = 'Stop'
 $script:ESC = [char]27
 $script:Quit = $false
 $script:Focus = 'Explorer' # Explorer | Editor | Terminal
+$script:ShowHelp = $false
 $script:Workspace = [IO.Path]::GetFullPath($Workspace)
 $script:CurrentDir = $script:Workspace
 $script:Entries = @()
@@ -21,9 +22,11 @@ $script:EditorScrollY = 0
 $script:EditorScrollX = 0
 $script:Dirty = $false
 $script:TerminalInput = ''
+$script:TerminalCursor = 0
 $script:TerminalHistory = New-Object System.Collections.Generic.List[string]
 $script:TerminalHistoryIndex = -1
 $script:Output = New-Object System.Collections.Generic.List[string]
+$script:OutputScroll = 0
 $script:Status = 'Ready'
 $script:Runtimes = @{}
 
@@ -45,12 +48,47 @@ function Fit([string]$Text, [int]$Width) {
     return $Text.PadRight($Width)
 }
 
+function Move-Focus([bool]$Backward) {
+    if ($Backward) {
+        if ($script:Focus -eq 'Explorer') { $script:Focus = 'Terminal' }
+        elseif ($script:Focus -eq 'Terminal') { $script:Focus = 'Editor' }
+        else { $script:Focus = 'Explorer' }
+    } else {
+        if ($script:Focus -eq 'Explorer') { $script:Focus = 'Editor' }
+        elseif ($script:Focus -eq 'Editor') { $script:Focus = 'Terminal' }
+        else { $script:Focus = 'Explorer' }
+    }
+    $script:Status = "Focus: $($script:Focus)"
+}
+
+function Get-ExplorerPageSize {
+    return [Math]::Max(1, [Console]::WindowHeight - 4)
+}
+
+function Set-ExplorerIndex([int]$Index) {
+    if ($script:Entries.Count -eq 0) {
+        $script:ExplorerIndex = 0
+        $script:ExplorerScroll = 0
+        return
+    }
+
+    $script:ExplorerIndex = [Math]::Max(0, [Math]::Min($Index, $script:Entries.Count - 1))
+    $visible = Get-ExplorerPageSize
+    if ($script:ExplorerIndex -lt $script:ExplorerScroll) {
+        $script:ExplorerScroll = $script:ExplorerIndex
+    }
+    if ($script:ExplorerIndex -ge $script:ExplorerScroll + $visible) {
+        $script:ExplorerScroll = $script:ExplorerIndex - $visible + 1
+    }
+}
+
 function Add-Output([string]$Text) {
     if ($null -eq $Text) { return }
     foreach ($line in ($Text -split "`r?`n")) {
         $script:Output.Add($line)
     }
     while ($script:Output.Count -gt 500) { $script:Output.RemoveAt(0) }
+    $script:OutputScroll = 0
 }
 
 function Find-CommandPath([string[]]$Names) {
@@ -101,11 +139,49 @@ function Refresh-Explorer {
             $entries.Add([pscustomobject]@{ Name='..'; FullName=(Split-Path -Parent $script:CurrentDir); PSIsContainer=$true })
         }
         foreach ($i in $items) { $entries.Add($i) }
-        $script:Entries = @($entries)
+        $script:Entries = $entries.ToArray()
         if ($script:ExplorerIndex -ge $script:Entries.Count) { $script:ExplorerIndex = [Math]::Max(0, $script:Entries.Count - 1) }
     } catch {
         $script:Status = "Explorer error: $($_.Exception.Message)"
     }
+}
+
+function Open-ExplorerSelection {
+    if ($script:Entries.Count -eq 0) { return }
+
+    $entry = $script:Entries[$script:ExplorerIndex]
+    if ($entry.PSIsContainer) {
+        $script:CurrentDir = $entry.FullName
+        $script:ExplorerIndex = 0
+        $script:ExplorerScroll = 0
+        Refresh-Explorer
+        $script:Status = "Directory: $($script:CurrentDir)"
+    } else {
+        Open-File $entry.FullName
+    }
+}
+
+function Go-To-ParentDirectory {
+    $current = [IO.Path]::GetFullPath($script:CurrentDir).TrimEnd('\')
+    $parent = Split-Path -Parent $current
+    if (-not $parent -or $parent -eq $current) {
+        $script:Status = 'Already at the filesystem root'
+        return
+    }
+
+    $childName = Split-Path -Leaf $current
+    $script:CurrentDir = $parent
+    $script:ExplorerIndex = 0
+    $script:ExplorerScroll = 0
+    Refresh-Explorer
+
+    for ($index = 0; $index -lt $script:Entries.Count; $index++) {
+        if ($script:Entries[$index].Name -eq $childName) {
+            Set-ExplorerIndex $index
+            break
+        }
+    }
+    $script:Status = "Directory: $($script:CurrentDir)"
 }
 
 function Open-File([string]$Path) {
@@ -215,6 +291,33 @@ function Ensure-EditorVisible([int]$Height, [int]$Width) {
     if ($script:EditorScrollX -lt 0) { $script:EditorScrollX = 0 }
 }
 
+function Move-EditorPage([int]$Direction) {
+    if ($script:Lines.Count -eq 0) { return }
+    $terminalHeight = [Math]::Min(12, [Math]::Max(7, [int]([Console]::WindowHeight * 0.28)))
+    $pageSize = [Math]::Max(1, [Console]::WindowHeight - $terminalHeight - 3)
+    $target = $script:CursorLine + ($Direction * $pageSize)
+    $script:CursorLine = [Math]::Max(0, [Math]::Min($target, $script:Lines.Count - 1))
+    $script:CursorCol = [Math]::Min($script:CursorCol, $script:Lines[$script:CursorLine].Length)
+}
+
+function Insert-TerminalText([string]$Text) {
+    $before = $script:TerminalInput.Substring(0, $script:TerminalCursor)
+    $after = $script:TerminalInput.Substring($script:TerminalCursor)
+    $script:TerminalInput = $before + $Text + $after
+    $script:TerminalCursor += $Text.Length
+}
+
+function Terminal-Backspace {
+    if ($script:TerminalCursor -le 0) { return }
+    $script:TerminalInput = $script:TerminalInput.Remove($script:TerminalCursor - 1, 1)
+    $script:TerminalCursor--
+}
+
+function Terminal-Delete {
+    if ($script:TerminalCursor -ge $script:TerminalInput.Length) { return }
+    $script:TerminalInput = $script:TerminalInput.Remove($script:TerminalCursor, 1)
+}
+
 function Get-NearestProject([string]$Start, [string]$Pattern) {
     $d = if ([IO.File]::Exists($Start)) { Split-Path -Parent $Start } else { $Start }
     while ($d) {
@@ -320,6 +423,62 @@ function Invoke-TerminalCommand([string]$Command) {
     }
 }
 
+function Get-TerminalPromptPrefix([int]$Width) {
+    $prefix = 'PS ' + $script:CurrentDir + '> '
+    $maxPrefix = [Math]::Max(8, [Math]::Min($Width - 4, [int]($Width * 0.55)))
+    if ($prefix.Length -gt $maxPrefix) {
+        $leaf = Split-Path -Leaf $script:CurrentDir
+        if (-not $leaf) { $leaf = [IO.Path]::GetPathRoot($script:CurrentDir) }
+        $prefix = 'PS …\' + $leaf + '> '
+    }
+    if ($prefix.Length -gt $maxPrefix) {
+        $prefix = $prefix.Substring(0, [Math]::Max(1, $maxPrefix - 2)) + '> '
+    }
+    return $prefix
+}
+
+function Draw-Help([int]$Width, [int]$Height) {
+    $helpLines = @(
+        'PANELS',
+        '  F2 Explorer    F3 Editor    F4 Terminal',
+        '  Tab next panel    Shift+Tab previous panel    Esc Explorer',
+        '',
+        'EXPLORER',
+        '  ↑/↓ select    ←/Backspace parent    →/Enter open',
+        '  Home/End first or last    PageUp/PageDown move one page',
+        '',
+        'EDITOR',
+        '  Arrows move    Home/End line edge    PageUp/PageDown move',
+        '  Ctrl+Home/Ctrl+End file edge    Ctrl+S save    F5 run',
+        '',
+        'TERMINAL',
+        '  ←/→/Home/End edit command    ↑/↓ history',
+        '  PageUp/PageDown scroll output    Ctrl+L clear output',
+        '',
+        'GLOBAL',
+        '  F1 or Esc close help    Ctrl+R refresh    Ctrl+Q quit'
+    )
+
+    $boxWidth = [Math]::Min(76, $Width - 6)
+    $boxHeight = [Math]::Min($helpLines.Count + 4, $Height - 4)
+    $boxX = [Math]::Max(2, [int](($Width - $boxWidth) / 2))
+    $boxY = [Math]::Max(1, [int](($Height - $boxHeight) / 2))
+
+    for ($row = 0; $row -lt $boxHeight; $row++) {
+        Move-To $boxX ($boxY + $row)
+        if ($row -eq 0) {
+            Write-Ansi ("$($script:ESC)[48;5;25m$($script:ESC)[97m" + (Fit ' WinIEX keyboard guide' $boxWidth) + "$($script:ESC)[0m")
+        } elseif ($row -eq $boxHeight - 1) {
+            Write-Ansi ("$($script:ESC)[48;5;236m$($script:ESC)[38;5;250m" + (Fit ' F1 / Esc: close' $boxWidth) + "$($script:ESC)[0m")
+        } else {
+            $lineIndex = $row - 2
+            $line = if ($lineIndex -ge 0 -and $lineIndex -lt $helpLines.Count) { $helpLines[$lineIndex] } else { '' }
+            $color = if ($line -in @('PANELS','EXPLORER','EDITOR','TERMINAL','GLOBAL')) { "$($script:ESC)[38;5;81m" } else { "$($script:ESC)[38;5;252m" }
+            Write-Ansi ("$($script:ESC)[48;5;234m" + $color + (Fit (' ' + $line) $boxWidth) + "$($script:ESC)[0m")
+        }
+    }
+}
+
 function Draw-UI {
     $w = [Console]::WindowWidth
     $h = [Console]::WindowHeight
@@ -337,19 +496,22 @@ function Draw-UI {
     $editorH = $termY - $topY
     $editorX = $explorerW + 1
     $editorW = $w - $editorX
+    $terminalPromptPrefix = ''
+    $terminalInputScroll = 0
 
     Hide-Cursor
     Move-To 0 0
-    $rt = ($script:Runtimes.Keys | Sort-Object) -join ', '
-    $title = ' WinIEX IDE  |  ' + $script:Workspace + '  | runtimes: ' + $rt
+    $title = ' WinIEX  |  F1 Help  F2 Explorer  F3 Editor  F4 Terminal  F5 Run  |  ' + $script:Workspace
     Write-Ansi ("$($script:ESC)[48;5;24m$($script:ESC)[97m" + (Fit $title $w) + "$($script:ESC)[0m")
 
     # Explorer
     for ($row=0; $row -lt ($h-2); $row++) {
         Move-To 0 ($topY+$row)
         if ($row -eq 0) {
-            $head = if ($script:Focus -eq 'Explorer') { '▶ EXPLORER ' } else { '  EXPLORER ' }
-            Write-Ansi ("$($script:ESC)[48;5;236m$($script:ESC)[97m" + (Fit $head $explorerW) + "$($script:ESC)[0m")
+            $position = if ($script:Entries.Count -gt 0) { "$($script:ExplorerIndex + 1)/$($script:Entries.Count)" } else { '0/0' }
+            $head = if ($script:Focus -eq 'Explorer') { "▶ F2 EXPLORER  $position" } else { "  F2 EXPLORER  $position" }
+            $headBg = if ($script:Focus -eq 'Explorer') { "$($script:ESC)[48;5;25m" } else { "$($script:ESC)[48;5;236m" }
+            Write-Ansi ($headBg + "$($script:ESC)[97m" + (Fit $head $explorerW) + "$($script:ESC)[0m")
         } elseif ($row -eq 1) {
             Write-Ansi ("$($script:ESC)[38;5;244m" + (Fit (' ' + $script:CurrentDir) $explorerW) + "$($script:ESC)[0m")
         } else {
@@ -358,13 +520,15 @@ function Draw-UI {
             if ($idx -lt $script:Entries.Count) {
                 $e = $script:Entries[$idx]
                 $icon = if ($e.PSIsContainer) { '▸ ' } else { '  ' }
-                $text = $icon + $e.Name
-                if ($idx -eq $script:ExplorerIndex -and $script:Focus -eq 'Explorer') {
-                    Write-Ansi ("$($script:ESC)[48;5;238m$($script:ESC)[97m" + (Fit (' '+$text) $explorerW) + "$($script:ESC)[0m")
+                $marker = if ($idx -eq $script:ExplorerIndex) { '›' } else { ' ' }
+                $text = $marker + $icon + $e.Name
+                if ($idx -eq $script:ExplorerIndex) {
+                    $selectionBg = if ($script:Focus -eq 'Explorer') { "$($script:ESC)[48;5;25m" } else { "$($script:ESC)[48;5;238m" }
+                    Write-Ansi ($selectionBg + "$($script:ESC)[97m" + (Fit $text $explorerW) + "$($script:ESC)[0m")
                     continue
                 }
             }
-            Write-Ansi (Fit (' '+$text) $explorerW)
+            Write-Ansi (Fit $text $explorerW)
         }
         Write-Ansi ("$($script:ESC)[38;5;240m│$($script:ESC)[0m")
     }
@@ -373,8 +537,9 @@ function Draw-UI {
     Move-To $editorX $topY
     $name = if ($script:FilePath) { Split-Path -Leaf $script:FilePath } else { '[no file]' }
     if ($script:Dirty) { $name += ' ●' }
-    $eh = if ($script:Focus -eq 'Editor') { '▶ EDITOR  ' + $name } else { '  EDITOR  ' + $name }
-    Write-Ansi ("$($script:ESC)[48;5;235m$($script:ESC)[97m" + (Fit $eh $editorW) + "$($script:ESC)[0m")
+    $eh = if ($script:Focus -eq 'Editor') { '▶ F3 EDITOR  ' + $name } else { '  F3 EDITOR  ' + $name }
+    $editorHeadBg = if ($script:Focus -eq 'Editor') { "$($script:ESC)[48;5;25m" } else { "$($script:ESC)[48;5;235m" }
+    Write-Ansi ($editorHeadBg + "$($script:ESC)[97m" + (Fit $eh $editorW) + "$($script:ESC)[0m")
 
     $contentH = $editorH - 1
     $lineNoW = [Math]::Max(4, $script:Lines.Count.ToString().Length + 1)
@@ -397,10 +562,14 @@ function Draw-UI {
 
     # Terminal panel
     Move-To $editorX $termY
-    $th = if ($script:Focus -eq 'Terminal') { '▶ TERMINAL ' } else { '  TERMINAL ' }
-    Write-Ansi ("$($script:ESC)[48;5;235m$($script:ESC)[97m" + (Fit $th $editorW) + "$($script:ESC)[0m")
     $outRows = $termH - 2
-    $start = [Math]::Max(0, $script:Output.Count - $outRows)
+    $maxOutputScroll = [Math]::Max(0, $script:Output.Count - $outRows)
+    $script:OutputScroll = [Math]::Max(0, [Math]::Min($script:OutputScroll, $maxOutputScroll))
+    $scrollLabel = if ($script:OutputScroll -gt 0) { "  scroll +$($script:OutputScroll)" } else { '' }
+    $th = if ($script:Focus -eq 'Terminal') { '▶ F4 TERMINAL' + $scrollLabel } else { '  F4 TERMINAL' + $scrollLabel }
+    $terminalHeadBg = if ($script:Focus -eq 'Terminal') { "$($script:ESC)[48;5;25m" } else { "$($script:ESC)[48;5;235m" }
+    Write-Ansi ($terminalHeadBg + "$($script:ESC)[97m" + (Fit $th $editorW) + "$($script:ESC)[0m")
+    $start = [Math]::Max(0, $script:Output.Count - $outRows - $script:OutputScroll)
     for ($r=0; $r -lt $outRows; $r++) {
         Move-To $editorX ($termY + 1 + $r)
         $idx = $start + $r
@@ -408,15 +577,25 @@ function Draw-UI {
         Write-Ansi (Fit $line $editorW)
     }
     Move-To $editorX ($termY + $termH - 1)
-    $prompt = 'PS ' + $script:CurrentDir + '> ' + $script:TerminalInput
+    $terminalPromptPrefix = Get-TerminalPromptPrefix $editorW
+    $inputWidth = [Math]::Max(1, $editorW - $terminalPromptPrefix.Length)
+    $terminalInputScroll = [Math]::Max(0, $script:TerminalCursor - $inputWidth + 1)
+    $visibleInput = if ($terminalInputScroll -lt $script:TerminalInput.Length) { $script:TerminalInput.Substring($terminalInputScroll) } else { '' }
+    $prompt = $terminalPromptPrefix + $visibleInput
     Write-Ansi ("$($script:ESC)[38;5;81m" + (Fit $prompt $editorW) + "$($script:ESC)[0m")
 
     # Status bar
     Move-To 0 $statusY
     $focusName = $script:Focus.ToUpperInvariant()
     $pos = if ($script:FilePath) { "Ln $($script:CursorLine+1), Col $($script:CursorCol+1)" } else { '' }
-    $status = " $focusName | Tab:focus  Enter:open  Ctrl+S:save  F5:run  Ctrl+R:refresh  Ctrl+Q:quit | $pos | $($script:Status)"
+    $status = " $focusName | $($script:Status) | $pos | Tab/Shift+Tab:focus  Ctrl+S:save  Ctrl+Q:quit"
     Write-Ansi ("$($script:ESC)[48;5;25m$($script:ESC)[97m" + (Fit $status $w) + "$($script:ESC)[0m")
+
+    if ($script:ShowHelp) {
+        Draw-Help $w $h
+        Hide-Cursor
+        return
+    }
 
     # Cursor
     if ($script:Focus -eq 'Editor' -and $script:FilePath) {
@@ -426,8 +605,8 @@ function Draw-UI {
             Move-To $cx $cy; Show-Cursor
         }
     } elseif ($script:Focus -eq 'Terminal') {
-        $prefixLen = ('PS ' + $script:CurrentDir + '> ').Length
-        $cx = $editorX + [Math]::Min($editorW-1, $prefixLen + $script:TerminalInput.Length)
+        $cx = $editorX + $terminalPromptPrefix.Length + ($script:TerminalCursor - $terminalInputScroll)
+        $cx = [Math]::Min($w - 1, $cx)
         $cy = $termY + $termH - 1
         Move-To $cx $cy; Show-Cursor
     }
@@ -435,36 +614,44 @@ function Draw-UI {
 
 function Handle-Key([ConsoleKeyInfo]$k) {
     $ctrl = (($k.Modifiers -band [ConsoleModifiers]::Control) -ne 0)
+    $shift = (($k.Modifiers -band [ConsoleModifiers]::Shift) -ne 0)
+
     if ($ctrl -and $k.Key -eq [ConsoleKey]::Q) { $script:Quit = $true; return }
+
+    if ($script:ShowHelp) {
+        if ($k.Key -in @([ConsoleKey]::F1, [ConsoleKey]::Escape, [ConsoleKey]::Enter)) {
+            $script:ShowHelp = $false
+            $script:Status = 'Help closed'
+        }
+        return
+    }
+
     if ($ctrl -and $k.Key -eq [ConsoleKey]::S) { Save-File; return }
     if ($ctrl -and $k.Key -eq [ConsoleKey]::R) { Detect-Runtimes; Refresh-Explorer; $script:Status='Refreshed'; return }
+    if ($k.Key -eq [ConsoleKey]::F1) { $script:ShowHelp = $true; $script:Status = 'Keyboard guide'; return }
+    if ($k.Key -eq [ConsoleKey]::F2) { $script:Focus = 'Explorer'; $script:Status = 'Focus: Explorer'; return }
+    if ($k.Key -eq [ConsoleKey]::F3) { $script:Focus = 'Editor'; $script:Status = 'Focus: Editor'; return }
+    if ($k.Key -eq [ConsoleKey]::F4) { $script:Focus = 'Terminal'; $script:Status = 'Focus: Terminal'; return }
     if ($k.Key -eq [ConsoleKey]::F5) { Run-CurrentFile; return }
+    if ($k.Key -eq [ConsoleKey]::Escape) { $script:Focus = 'Explorer'; $script:Status = 'Focus: Explorer'; return }
     if ($k.Key -eq [ConsoleKey]::Tab) {
-        if ($script:Focus -eq 'Explorer') { $script:Focus='Editor' }
-        elseif ($script:Focus -eq 'Editor') { $script:Focus='Terminal' }
-        else { $script:Focus='Explorer' }
+        Move-Focus $shift
         return
     }
 
     if ($script:Focus -eq 'Explorer') {
         switch ($k.Key) {
-            'UpArrow' { if ($script:ExplorerIndex -gt 0) { $script:ExplorerIndex-- } }
-            'DownArrow' { if ($script:ExplorerIndex + 1 -lt $script:Entries.Count) { $script:ExplorerIndex++ } }
-            'Enter' {
-                if ($script:Entries.Count -gt 0) {
-                    $e = $script:Entries[$script:ExplorerIndex]
-                    if ($e.PSIsContainer) { $script:CurrentDir=$e.FullName; $script:ExplorerIndex=0; $script:ExplorerScroll=0; Refresh-Explorer }
-                    else { Open-File $e.FullName }
-                }
-            }
-            'Backspace' {
-                $p = Split-Path -Parent $script:CurrentDir
-                if ($p) { $script:CurrentDir=$p; $script:ExplorerIndex=0; $script:ExplorerScroll=0; Refresh-Explorer }
-            }
+            'UpArrow' { Set-ExplorerIndex ($script:ExplorerIndex - 1) }
+            'DownArrow' { Set-ExplorerIndex ($script:ExplorerIndex + 1) }
+            'Home' { Set-ExplorerIndex 0 }
+            'End' { Set-ExplorerIndex ($script:Entries.Count - 1) }
+            'PageUp' { Set-ExplorerIndex ($script:ExplorerIndex - (Get-ExplorerPageSize)) }
+            'PageDown' { Set-ExplorerIndex ($script:ExplorerIndex + (Get-ExplorerPageSize)) }
+            'LeftArrow' { Go-To-ParentDirectory }
+            'Backspace' { Go-To-ParentDirectory }
+            'RightArrow' { Open-ExplorerSelection }
+            'Enter' { Open-ExplorerSelection }
         }
-        $visible = [Math]::Max(1, [Console]::WindowHeight - 4)
-        if ($script:ExplorerIndex -lt $script:ExplorerScroll) { $script:ExplorerScroll = $script:ExplorerIndex }
-        if ($script:ExplorerIndex -ge $script:ExplorerScroll + $visible) { $script:ExplorerScroll = $script:ExplorerIndex - $visible + 1 }
         return
     }
 
@@ -475,8 +662,16 @@ function Handle-Key([ConsoleKeyInfo]$k) {
             'RightArrow' { if ($script:CursorCol -lt $script:Lines[$script:CursorLine].Length) { $script:CursorCol++ } elseif ($script:CursorLine+1 -lt $script:Lines.Count) { $script:CursorLine++; $script:CursorCol=0 } }
             'UpArrow' { if ($script:CursorLine -gt 0) { $script:CursorLine--; $script:CursorCol=[Math]::Min($script:CursorCol,$script:Lines[$script:CursorLine].Length) } }
             'DownArrow' { if ($script:CursorLine+1 -lt $script:Lines.Count) { $script:CursorLine++; $script:CursorCol=[Math]::Min($script:CursorCol,$script:Lines[$script:CursorLine].Length) } }
-            'Home' { $script:CursorCol=0 }
-            'End' { $script:CursorCol=$script:Lines[$script:CursorLine].Length }
+            'Home' {
+                if ($ctrl) { $script:CursorLine = 0 }
+                $script:CursorCol = 0
+            }
+            'End' {
+                if ($ctrl) { $script:CursorLine = $script:Lines.Count - 1 }
+                $script:CursorCol = $script:Lines[$script:CursorLine].Length
+            }
+            'PageUp' { Move-EditorPage -1 }
+            'PageDown' { Move-EditorPage 1 }
             'Enter' { Editor-Enter }
             'Backspace' { Editor-Backspace }
             'Delete' { Editor-Delete }
@@ -488,13 +683,39 @@ function Handle-Key([ConsoleKeyInfo]$k) {
     }
 
     if ($script:Focus -eq 'Terminal') {
+        if ($ctrl -and $k.Key -eq [ConsoleKey]::L) {
+            $script:Output.Clear()
+            $script:OutputScroll = 0
+            $script:Status = 'Terminal output cleared'
+            return
+        }
+
         switch ($k.Key) {
-            'Enter' { $cmd=$script:TerminalInput; $script:TerminalInput=''; Invoke-TerminalCommand $cmd }
-            'Backspace' { if ($script:TerminalInput.Length -gt 0) { $script:TerminalInput=$script:TerminalInput.Substring(0,$script:TerminalInput.Length-1) } }
+            'Enter' {
+                $cmd = $script:TerminalInput
+                $script:TerminalInput = ''
+                $script:TerminalCursor = 0
+                Invoke-TerminalCommand $cmd
+            }
+            'Backspace' { Terminal-Backspace }
+            'Delete' { Terminal-Delete }
+            'LeftArrow' { if ($script:TerminalCursor -gt 0) { $script:TerminalCursor-- } }
+            'RightArrow' { if ($script:TerminalCursor -lt $script:TerminalInput.Length) { $script:TerminalCursor++ } }
+            'Home' { $script:TerminalCursor = 0 }
+            'End' { $script:TerminalCursor = $script:TerminalInput.Length }
+            'PageUp' {
+                $pageSize = [Math]::Max(1, [Math]::Min(10, [Console]::WindowHeight - 5))
+                $script:OutputScroll += $pageSize
+            }
+            'PageDown' {
+                $pageSize = [Math]::Max(1, [Math]::Min(10, [Console]::WindowHeight - 5))
+                $script:OutputScroll = [Math]::Max(0, $script:OutputScroll - $pageSize)
+            }
             'UpArrow' {
                 if ($script:TerminalHistory.Count -gt 0) {
                     $script:TerminalHistoryIndex=[Math]::Max(0,$script:TerminalHistoryIndex-1)
                     $script:TerminalInput=$script:TerminalHistory[$script:TerminalHistoryIndex]
+                    $script:TerminalCursor=$script:TerminalInput.Length
                 }
             }
             'DownArrow' {
@@ -502,9 +723,10 @@ function Handle-Key([ConsoleKeyInfo]$k) {
                     $script:TerminalHistoryIndex=[Math]::Min($script:TerminalHistory.Count,$script:TerminalHistoryIndex+1)
                     if ($script:TerminalHistoryIndex -eq $script:TerminalHistory.Count) { $script:TerminalInput='' }
                     else { $script:TerminalInput=$script:TerminalHistory[$script:TerminalHistoryIndex] }
+                    $script:TerminalCursor=$script:TerminalInput.Length
                 }
             }
-            default { if (-not [char]::IsControl($k.KeyChar)) { $script:TerminalInput += [string]$k.KeyChar } }
+            default { if (-not [char]::IsControl($k.KeyChar)) { Insert-TerminalText ([string]$k.KeyChar) } }
         }
     }
 }
@@ -522,6 +744,7 @@ try {
     Refresh-Explorer
     Add-Output 'WinIEX terminal IDE ready.'
     Add-Output 'Commands run in the current Explorer directory.'
+    Add-Output 'Press F1 for the keyboard guide.'
     while (-not $script:Quit) {
         Draw-UI
         $key = [Console]::ReadKey($true)
