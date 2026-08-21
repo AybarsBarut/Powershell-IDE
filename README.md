@@ -20,17 +20,17 @@ For a specific workspace:
 
 ```text
 ┌ WinIEX IDE ─────────────────────────────────────────────────────────────┐
-│ EXPLORER                 │ EDITOR                                      │
-│ C:\Projects\Demo         │ main.py                                     │
-│ ▸ src                    │   1  def hello():                           │
-│   README.md              │   2      print("hello")                    │
-│   main.py                │   3                                        │
-│                          ├─────────────────────────────────────────────┤
-│                          │ TERMINAL                                    │
-│                          │ > python main.py                            │
-│                          │ hello                                       │
-│                          │ PS C:\Projects\Demo> _                      │
-└────────────────────────────────────────────────────────────────────────┘
+│ EXPLORER                 │ EDITOR                                       │
+│ C:\Projects\Demo         │ main.py                                      │
+│ ▸ src                    │   1  def hello():                            │
+│   README.md              │   2      print("hello")                      │
+│   main.py                │   3                                          │
+│                          ├──────────────────────────────────────────────┤
+│                          │ TERMINAL                                     │
+│                          │ > python main.py                             │
+│                          │ hello                                        │
+│                          │ PS C:\Projects\Demo> _                       │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Controls
