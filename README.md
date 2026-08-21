@@ -24,6 +24,27 @@ WinIEX is a lightweight, terminal-native IDE prototype for Windows, written enti
 
 ## Quick start
 
+### One-line launch in the current terminal
+
+Run this command from the directory you want to open as the workspace:
+
+```powershell
+irm 'https://raw.githubusercontent.com/AybarsBarut/Powershell-IDE/main/install.ps1' | iex
+```
+
+The installer downloads WinIEX to `%LOCALAPPDATA%\WinIEX` and invokes it directly in the current PowerShell or Windows Terminal session. It does not use `Start-Process` or open a separate application window.
+
+To open a specific workspace with the same bootstrap script:
+
+```powershell
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/AybarsBarut/Powershell-IDE/main/install.ps1'))) -Workspace 'C:\Projects\Demo'
+```
+
+> [!IMPORTANT]
+> Piping a remote script to `iex` executes it immediately. Review [`install.ps1`](install.ps1) and [`src/WinIEX.ps1`](src/WinIEX.ps1) before running the one-line command.
+
+### Run from a clone
+
 Clone the repository and launch WinIEX from PowerShell 7:
 
 ```powershell
@@ -42,16 +63,6 @@ To open a different workspace, pass its full path:
 
 ```powershell
 pwsh -NoProfile -File .\src\WinIEX.ps1 -Workspace 'C:\Projects\Demo'
-```
-
-### Run without cloning
-
-Review the script first, then download and run it locally:
-
-```powershell
-$scriptPath = Join-Path $env:TEMP 'WinIEX.ps1'
-Invoke-WebRequest 'https://raw.githubusercontent.com/AybarsBarut/Powershell-IDE/main/src/WinIEX.ps1' -OutFile $scriptPath
-& $scriptPath -Workspace 'C:\Projects\Demo'
 ```
 
 ## Interface
@@ -115,7 +126,7 @@ Press `Ctrl+R` after installing a new runtime so WinIEX can detect it.
 Powershell-IDE/
 ├── src/
 │   └── WinIEX.ps1   # Terminal IDE implementation
-├── install.ps1      # Download/bootstrap script template
+├── install.ps1      # Same-terminal download/bootstrap launcher
 ├── LICENSE
 └── README.md
 ```
